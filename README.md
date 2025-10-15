@@ -68,4 +68,4 @@ Sometimes it can happen that modifying manually your configuration some stuff mi
 ## New features / Feedback
 That's all for the moment, but there will probably be more features coming down the line, according to other needs I might have for my blogging. In case you are using emile for your blog, thank you and feel free to send me any suggestions or requests for new features. <br> 
  <br> 
-Happy blogging!
+<b>Happy blogging!</b>
