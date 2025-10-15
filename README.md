@@ -1,5 +1,5 @@
 # Emile
-Utility for painless blogging with Zola.
+### A POSIX utility for painless blogging with Zola.
 
 ---
 
