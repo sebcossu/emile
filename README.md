@@ -65,6 +65,27 @@ You can print the content of your configuration living in .emilerc with the foll
 Sometimes it can happen that modifying manually your configuration some stuff might get messed up... for this reason I created a command called `doctor` which tries to diagnose what's wrong with your configuration. You can diagnose your configuration with the following command: <br> 
 `emile doctor` <br> 
 
+## Remove configuration
+You can remove the current .emilerc configuration with the following command:
+`emile purge`
+
+## List all the posts for a blog
+You can list all the posts for a registered blog using the following command:
+`emile posts <blog_label>`
+
+## Edit a blog post
+You can edit blog posts that you previously created with the following command:
+`emile edit <blog_label> <post_title|post_folder_name> [-e none|/editor]`
+
+The post will be open for edit with your preferred text editor.
+Precedence is: inline through -e > .emilerc > $EDITOR
+
+## Remove a blog post
+You can remove a blog post that you previously created with the following command:
+`emile rm <blog_label> <post_title|post_folder_name> [-f]`
+
+If the `rm` command is run without the `-f` parameter, it prompts for confirmation, otherwise it forces deletion.
+
 ## New features / Feedback
 That's all for the moment, but there will probably be more features coming down the line, according to other needs I might have for my blogging. In case you are using emile for your blog, thank you and feel free to send me any suggestions or requests for new features. <br> 
  <br> 
