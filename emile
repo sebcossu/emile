@@ -91,7 +91,7 @@ abs_path() {
 }
 
 trim() {
-    printf '%s' "$1" | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//'
+    printf '%s' "$1" | sed -e 's/^[[:space:]]\{1,\}//' -e 's/[[:space:]]\{1,\}$//'
 }
 
 escape_toml() {
@@ -104,7 +104,7 @@ toml_get() {
     awk -v section="$section" -v want="$key" '
         BEGIN{
             in_section=0
-            sec_re="^[[:space:]]*\\[" section "\\][[:space:]]*$"  # literal [section]
+            sec_re="^[[:space:]]*\\[" section "\\][[:space:]]*$"
         }
         {
             line=$0
@@ -134,7 +134,7 @@ toml_set() {
     awk -v section="$section" -v k="$key" -v v="$val" '
         BEGIN{
             in_section=0; seen=0; wrote=0
-            sec_re="^[[:space:]]*\\[" section "\\][[:space:]]*$"  # literal [section]
+            sec_re="^[[:space:]]*\\[" section "\\][[:space:]]*$"
         }
         {
             line=$0
@@ -173,19 +173,19 @@ get_tz() {
 
 now_rfc3339_local() {
     tz=$(get_tz)
-    if out=$(TZ="$tz" date "+%Y-%m-%dT%H:%M:%S%:z" 2>/dev/null); then
-        printf '%s' "$out"
-    else
-        D=$(TZ="$tz" date "+%Y-%m-%dT%H:%M:%S")
-        Z=$(TZ="$tz" date "+%z" | sed -E 's/([+-][0-9]{2})([0-9]{2})/\1:\2/')
-        printf '%s%s' "$D" "$Z"
-    fi
+    out=$(TZ="$tz" date "+%Y-%m-%dT%H:%M:%S%:z" 2>/dev/null || printf '')
+    case $out in
+        *[+-][0-9][0-9]:[0-9][0-9]) printf '%s' "$out"; return 0 ;;
+    esac
+    D=$(TZ="$tz" date "+%Y-%m-%dT%H:%M:%S")
+    Z=$(TZ="$tz" date "+%z" | sed 's/\([+-][0-9][0-9]\)\([0-9][0-9]\)/\1:\2/')
+    printf '%s%s' "$D" "$Z"
 }
 
 slugify() {
-    printf '%s' "$1" \
+    LC_ALL=C printf '%s' "$1" \
       | tr '[:upper:]' '[:lower:]' \
-      | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'
+      | sed 's/[^a-z0-9][^a-z0-9]*/-/g; s/^-*//; s/-*$//'
 }
 
 title_from_index() {
@@ -300,14 +300,17 @@ find_post_dir_by_query() {
 
     found=""
     count=0
-    find "$posts_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while IFS= read -r d; do
-        [ -f "$d/index.md" ] || continue
-        t=$(title_from_index "$d/index.md" || true)
-        [ -n "$t" ] || continue
-        if [ "$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$q" | tr '[:upper:]' '[:lower:]')" ]; then
-            printf '%s\n' "$d"
-        fi
-    done | {
+    {
+        for d in "$posts_dir"/*; do
+            [ -d "$d" ] || continue
+            [ -f "$d/index.md" ] || continue
+            t=$(title_from_index "$d/index.md" || true)
+            [ -n "$t" ] || continue
+            if [ "$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$q" | tr '[:upper:]' '[:lower:]')" ]; then
+                printf '%s\n' "$d"
+            fi
+        done
+    } | {
         while IFS= read -r line; do
             count=$((count+1))
             [ $count -eq 1 ] && found=$line
@@ -318,7 +321,8 @@ find_post_dir_by_query() {
             printf '%s\n' "$found"; exit 0
         else
             printf "Multiple matches for '%s':\n" "$q" >&2
-            find "$posts_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while IFS= read -r d; do
+            for d in "$posts_dir"/*; do
+                [ -d "$d" ] || continue
                 [ -f "$d/index.md" ] || continue
                 t=$(title_from_index "$d/index.md" || true)
                 [ -n "$t" ] || t="(untitled)"
@@ -374,7 +378,8 @@ cmd_posts() {
     label=$1
     posts_dir=$(resolve_posts_dir "$label")
     posts_dir=$(abs_path "$posts_dir")
-    find "$posts_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while IFS= read -r d; do
+    for d in "$posts_dir"/*; do
+        [ -d "$d" ] || continue
         [ -f "$d/index.md" ] || continue
         t=$(title_from_index "$d/index.md" || printf '%s' "(untitled)")
         printf '%s (%s)\n' "$t" "$(basename "$d")"
@@ -450,24 +455,29 @@ cmd_conf() {
 cmd_doctor() {
     printf '%s\n' "emile doctor"
     printf '%s\n' "============"
+
     if [ ! -f "$CONFIG_FILE" ]; then
         printf '%s\n' "- Config: NOT FOUND at $CONFIG_FILE"
         return
     else
         printf '%s\n' "- Config: found at $CONFIG_FILE"
     fi
+
     tz=$(get_tz)
     printf '%s\n' "- Resolved timezone: $tz"
-    if TS=$(TZ="$tz" date "+%Y-%m-%dT%H:%M:%S%:z" 2>/dev/null); then
-        printf '  %s\n' "Timestamp sample: $TS"
-    else
-        if TS=$(TZ="$tz" date "+%Y-%m-%dT%H:%M:%S %z" 2>/dev/null); then
-            TS=$(printf '%s' "$TS" | sed -E 's/([+-][0-9]{2})([0-9]{2})/\1:\2/')
+
+    TS=$(TZ="$tz" date "+%Y-%m-%dT%H:%M:%S%:z" 2>/dev/null || printf '')
+    case $TS in
+        *[+-][0-9][0-9]:[0-9][0-9])
             printf '  %s\n' "Timestamp sample: $TS"
-        else
-            printf '  %s\n' "Warning: 'date' did not accept TZ='$tz'"
-        fi
-    fi
+            ;;
+        *)
+            D=$(TZ="$tz" date "+%Y-%m-%dT%H:%M:%S")
+            Z=$(TZ="$tz" date "+%z" | sed 's/\([+-][0-9][0-9]\)\([0-9][0-9]\)/\1:\2/')
+            printf '  %s\n' "Timestamp sample: $D$Z"
+            ;;
+    esac
+
     ed=$(toml_get config editor || true 2>/dev/null || :)
     [ -z "${ed:-}" ] && ed="${EDITOR:-}"
     if [ -n "${ed:-}" ]; then
@@ -479,18 +489,35 @@ cmd_doctor() {
     else
         printf '%s\n' "- Editor: not configured (set config editor … or \$EDITOR)"
     fi
+
     printf '%s\n' "- Blogs:"
-    any=0
-    awk '
-        BEGIN{in_section=0}
-        /^[[:space:]]*\[.*\][[:space:]]*$/ { in_section = ($0 ~ /^[[:space:]]*\[blogs\][[:space:]]*$/)?1:0; next }
-        in_section && $0 !~ /^[[:space:]]*(#|$)/ { print }
-    ' "$CONFIG_FILE" | while IFS= read -r line; do
-        any=1
-        k=${line%%=*}; v=${line#*=}
-        k=$(printf '%s' "$k" | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')
-        v=$(printf '%s' "$v" | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')
-        case $v in \"*\") v=${v#\"}; v=${v%\"} ;; esac
+    blog_lines=$(
+        awk '
+            BEGIN{in_section=0}
+            /^[[:space:]]*\[.*\][[:space:]]*$/ {
+                in_section = ($0 ~ /^[[:space:]]*\[blogs\][[:space:]]*$/)?1:0; next
+            }
+            in_section && $0 !~ /^[[:space:]]*(#|$)/ { print }
+        ' "$CONFIG_FILE"
+    )
+
+    if [ -z "$blog_lines" ]; then
+        printf ' (none)\n'
+        return
+    fi
+
+    printf '%s\n' "$blog_lines" | while IFS= read -r line; do
+        k=${line%%=*}
+        v=${line#*=}
+
+        k=$(printf '%s' "$k" | sed -e 's/^[[:space:]]\{1,\}//' -e 's/[[:space:]]\{1,\}$//')
+        v=$(printf '%s' "$v" | sed -e 's/^[[:space:]]\{1,\}//' -e 's/[[:space:]]\{1,\}$//')
+
+        v=$(printf '%s' "$v" \
+            | sed -e 's/[[:space:]]\{1,\}#.*$//' \
+                -e 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+                -e 's/^"//; s/"$//')
+
         if [ -d "$v" ] && [ -w "$v" ]; then
             printf '  • %s -> %s (OK)\n' "$k" "$v"
         elif [ -d "$v" ]; then
@@ -499,7 +526,6 @@ cmd_doctor() {
             printf '  • %s -> %s (missing)\n' "$k" "$v"
         fi
     done
-    [ $any -eq 1 ] || printf '%s\n' '  (none)'
 }
 
 cmd_purge() {
