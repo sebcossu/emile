@@ -1,218 +1,260 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+# ------------------------------------------------
+# A POSIX utility for painless blogging with Zola.
+# ------------------------------------------------
+# by Seb Cossu
+# ------------------------------------------------
+# sebcossu.com
+# blog.sebcossu.com
+# sebcossu.github.com
+# ------------------------------------------------
+
+set -eu
 
 CONFIG_FILE="${HOME}/.emilerc"
 
-# ---------------- Utils ----------------
+# ~v[ UTILS ]v~
 
 usage() {
-    printf "%s\n" \
-        "emile — Utility for painless blogging with Zola." \
-        "" \
-        "Config saved in ~/.emilerc (TOML format)." \
-        "" \
-        "Usage:" \
-        "  emile set blogs <label> <posts_dir>" \
-        "  emile set config editor </path/to/editor>" \
-        "  emile set config locale <IANA_tz>" \
-        "  emile new <label> \"Post title\" [-t tag1,tag2] [-c Category] [-e none|/editor]" \
-        "  emile new -d <posts_dir> \"Post title\" [-t tag1,tag2] [-c Category] [-e none|/editor]" \
-        "  emile conf" \
-        "  emile doctor" \
-        "" \
-        "Examples:" \
-        "  emile set blogs nightcup ~/code/blog/content/posts" \
-        "  emile set config editor /usr/bin/vim" \
-        "  emile set config locale Europe/London" \
-        "  emile new nightcup \"My cuppa\" -t casual,blogging -c \"Casual Cup\"" \
-        "  emile new nightcup \"My cuppa\" -t casual -e /usr/bin/emacs" \
-        "  emile new nightcup \"My cuppa\" -e none"
+    printf '%s\n' "
+emile — A POSIX utility for painless blogging with Zola.
+
+Usage:
+    
+    - Set a label for your blog posts folder (saved in ~/.emilerc):
+        emile set blogs <label> <posts_dir>
+
+    - Set your favourite editor (saved in ~/.emilerc)
+        emile set config editor </path/to/editor>
+
+    - Set your locale (saved in ~/.emilerc)
+        emile set config locale <IANA_tz>
+
+    - Create a new post for a blog:
+        emile new <label> \"Post title\" [-t tag1,tag2] [-c Category] [-e none|/editor]
+        emile new -d <posts_dir> \"Post title\" [-t tag1,tag2] [-c Category] [-e none|/editor]
+
+    - List all the posts for a blog:
+    emile posts <label>
+
+    - Edit a blog post:
+    emile edit <label> <title|folder> [-e none|/editor]
+
+    - Remove a blog post:
+    emile rm <label> <title|folder> [-f]
+
+    - View your Emile config (~/.emilerc):
+        emile conf
+
+    - Troubleshoot/Diagnose your Emile config (~/.emilerc)
+        emile doctor
+
+    - Delete your Emile config (~/.emilerc)
+        emile purge
+    "
     exit 1
 }
 
 err() { printf "Error: %s\n" "$*" >&2; exit 1; }
 
 touch_config() {
-    if [ ! -f "$CONFIG_FILE" ]; then
-        printf "%s\n" "# emile config (TOML)" > "$CONFIG_FILE"
-        printf "\n[blogs]\n\n[config]\n" >> "$CONFIG_FILE"
-    fi
+    [ -f "$CONFIG_FILE" ] || {
+        printf "%s\n" "# Emile config" > "$CONFIG_FILE"
+    }
 }
 
 abs_path() {
-    local p="$1"
-    p="${p/#\~/$HOME}"
-    if command -v realpath >/dev/null 2>&1; then
-        realpath -m "$p"
-    else
-        ( cd "$p" 2>/dev/null && pwd ) || { mkdir -p "$p"; cd "$p" && pwd; }
-    fi
+    p=$1
+    case $p in
+        "~"*) p=${p#\~}; p=$HOME$p ;;
+    esac
+    case $p in
+        /*) : ;;
+        *) p=$PWD/$p ;;
+    esac
+    printf '%s\n' "$p" | awk -F/ '
+        {
+          out_count=0
+          for (i=1; i<=NF; i++) {
+            part=$i
+            if (part=="" || part==".") continue
+            if (part=="..") { if (out_count>0) out_count--; next }
+            out[++out_count]=part
+          }
+          s="/"
+          for (j=1; j<=out_count; j++) {
+            s=s out[j]
+            if (j<out_count) s=s "/"
+          }
+          print s
+        }'
 }
 
-trim() { printf '%s' "$1" | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//'; }
-escape_toml() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+trim() {
+    printf '%s' "$1" | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//'
+}
+
+escape_toml() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
 
 toml_get() {
-    local section="$1" key="$2"
+    section=$1; key=$2
     [ -f "$CONFIG_FILE" ] || return 1
-    local current="" line
-    while IFS= read -r line || [ -n "$line" ]; do
-        line="${line%$'\r'}"
-        if [[ $line =~ ^[[:space:]]*\[[^]]+\][[:space:]]*$ ]]; then
-            if [[ $line =~ ^[[:space:]]*\[$section\][[:space:]]*$ ]]; then
-                current="$section"
-            else
-                current=""
-            fi
-            continue
-        fi
-        [ "$current" = "$section" ] || continue
-        [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
-        case "$line" in
-            *=*)
-                local k="${line%%=*}"
-                local v="${line#*=}"
-                k="$(trim "$k")"
-                [ "$k" = "$key" ] || continue
-                v="$(trim "$v")"
-                if [[ $v == \"*\" && $v == *\" ]]; then
-                    v="${v#\"}"; v="${v%\"}"
-                fi
-                printf '%s' "$v"
-                return 0
-                ;;
-        esac
-    done < "$CONFIG_FILE"
-    return 1
+    awk -v section="$section" -v want="$key" '
+        BEGIN{
+            in_section=0
+            sec_re="^[[:space:]]*\\[" section "\\][[:space:]]*$"  # literal [section]
+        }
+        {
+          line=$0
+          sub(/\r$/,"",line)
+          if (line ~ /^[[:space:]]*\[.*\][[:space:]]*$/) {
+            in_section = (line ~ sec_re) ? 1 : 0
+            next
+          }
+          if (!in_section) next
+          if (line ~ /^[[:space:]]*([#]|$)/) next
+          pos=index(line,"="); if (!pos) next
+          k=substr(line,1,pos-1); v=substr(line,pos+1)
+          gsub(/^[[:space:]]+|[[:space:]]+$/,"",k)
+          if (k!=want) next
+          gsub(/^[[:space:]]+|[[:space:]]+$/,"",v)
+          if (v ~ /^".*"$/) { sub(/^"/,"",v); sub(/"$/,"",v) }
+          print v; exit 0
+        }
+    ' "$CONFIG_FILE"
 }
 
 toml_set() {
-    local section="$1" key="$2" val="$3"
+    section=$1; key=$2; val=$3
     touch_config
-    local tmp="${CONFIG_FILE}.tmp"
+    tmp="${CONFIG_FILE}.tmp"
     : > "$tmp"
-    local current="" seen_section=0 wrote_key=0 line
-    while IFS= read -r line || [ -n "$line" ]; do
-        line="${line%$'\r'}"
-        if [[ $line =~ ^[[:space:]]*\[[^]]+\][[:space:]]*$ ]]; then
-            if [ "$current" = "$section" ] && [ "$wrote_key" -eq 0 ]; then
-                printf '%s = "%s"\n' "$key" "$val" >> "$tmp"
-                wrote_key=1
-            fi
-            printf "%s\n" "$line" >> "$tmp"
-            if [[ $line =~ ^[[:space:]]*\[$section\][[:space:]]*$ ]]; then
-                current="$section"; seen_section=1
-            else
-                current=""
-            fi
-            continue
-        fi
-        if [ "$current" = "$section" ] && [[ $line =~ ^[[:space:]]*$key[[:space:]]*= ]]; then
-            printf '%s = "%s"\n' "$key" "$val" >> "$tmp"
-            wrote_key=1
-            continue
-        fi
-        printf "%s\n" "$line" >> "$tmp"
-    done < "$CONFIG_FILE"
-
-    if [ "$seen_section" -eq 0 ]; then
-        printf "\n[%s]\n%s = \"%s\"\n" "$section" "$key" "$val" >> "$tmp"
-    else
-        if [ "$current" = "$section" ] && [ "$wrote_key" -eq 0 ]; then
-            printf '%s = "%s"\n' "$key" "$val" >> "$tmp"
-        fi
-    fi
-
+    awk -v section="$section" -v k="$key" -v v="$val" '
+        BEGIN{
+            in_section=0; seen=0; wrote=0
+            sec_re="^[[:space:]]*\\[" section "\\][[:space:]]*$"  # literal [section]
+        }
+        {
+          line=$0
+          sub(/\r$/,"",line)
+          if (line ~ /^[[:space:]]*\[.*\][[:space:]]*$/) {
+            if (in_section && !wrote) { print k " = \"" v "\"" }
+            print line
+            in_section = (line ~ sec_re) ? 1 : 0
+            if (in_section) seen=1
+            next
+          }
+          if (in_section && line ~ "^[[:space:]]*" k "[[:space:]]*=") {
+            print k " = \"" v "\""; wrote=1; next
+          }
+          print line
+        }
+        END{
+          if (!seen) {
+            print ""
+            print "[" section "]"
+            print k " = \"" v "\""
+          } else if (in_section && !wrote) {
+            print k " = \"" v "\""
+          }
+        }
+    ' "$CONFIG_FILE" > "$tmp"
     mv "$tmp" "$CONFIG_FILE"
 }
 
 get_tz() {
-    local cfg
-    cfg="$(toml_get config locale || true)"
-    if [ -n "$cfg" ]; then
-        printf '%s' "$cfg"
-        return 0
-    fi
-
-    if [ -n "${TZ:-}" ]; then
-        printf '%s' "$TZ"
-        return 0
-    fi
-
+    val=$(toml_get config locale || true 2>/dev/null || :)
+    if [ -n "${val:-}" ]; then printf '%s' "$val"; return 0; fi
+    if [ -n "${TZ:-}" ]; then printf '%s' "$TZ"; return 0; fi
     printf '%s' "UTC"
 }
 
 now_rfc3339_local() {
-    local tz; tz="$(get_tz)"
-    if DATE_STR=$(TZ="$tz" date "+%Y-%m-%dT%H:%M:%S%:z" 2>/dev/null); then
-        printf '%s' "$DATE_STR"
+    tz=$(get_tz)
+    if out=$(TZ="$tz" date "+%Y-%m-%dT%H:%M:%S%:z" 2>/dev/null); then
+        printf '%s' "$out"
     else
-        local D Z
         D=$(TZ="$tz" date "+%Y-%m-%dT%H:%M:%S")
-        Z=$(TZ="$tz" date "+%z") # +0100
-        Z="${Z:0:3}:${Z:3:2}" # -> +01:00
+        Z=$(TZ="$tz" date "+%z" | sed -E 's/([+-][0-9]{2})([0-9]{2})/\1:\2/')
         printf '%s%s' "$D" "$Z"
     fi
 }
 
 slugify() {
     printf '%s' "$1" \
-        | tr '[:upper:]' '[:lower:]' \
-        | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'
+      | tr '[:upper:]' '[:lower:]' \
+      | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'
+}
+
+title_from_index() {
+    idx=$1
+    [ -f "$idx" ] || return 1
+    awk '
+      BEGIN{in_block=0}
+      /^\+\+\+$/ { in_block = in_block ? 0 : 1; next }
+      in_block && $0 ~ /^[[:space:]]*title[[:space:]]*=/ {
+        line=$0
+        sub(/^[[:space:]]*title[[:space:]]*=[[:space:]]*/,"",line)
+        gsub(/^[[:space:]]*"/,"",line); gsub(/"[[:space:]]*$/,"",line)
+        print line; exit
+      }
+    ' "$idx"
 }
 
 create_post() {
-    local posts_dir="$1"; shift
-    local title="$1";     shift
+    posts_dir=$1; shift
+    title=$1; shift
 
-    local tags_csv="" category="" editor_override=""
-    while getopts ":t:c:e:" opt; do
-        case "$opt" in
-            t) tags_csv="$OPTARG" ;;
-            c) category="$OPTARG" ;;
-            e) editor_override="$OPTARG" ;;
-            *) usage ;;
+    tags_csv=""; category=""; editor_override=""
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -t) tags_csv=$2; shift 2 ;;
+            -c) category=$2; shift 2 ;;
+            -e) editor_override=$2; shift 2 ;;
+            *) break ;;
         esac
     done
-    shift $((OPTIND-1))
 
     [ -n "$title" ] || err "Missing post title"
 
-    posts_dir="$(abs_path "$posts_dir")"
+    posts_dir=$(abs_path "$posts_dir")
     mkdir -p "$posts_dir"
 
-    local slug; slug="$(slugify "$title")"
-    local target_dir="$posts_dir/$slug"
-    local n=2
+    slug=$(slugify "$title")
+    target_dir="$posts_dir/$slug"
+    n=2
     while [ -e "$target_dir" ]; do
-        target_dir="$posts_dir/${slug}-${n}"
+        target_dir="$posts_dir/${slug}-$n"
         n=$((n+1))
     done
     mkdir -p "$target_dir"
 
-    local dt; dt="$(now_rfc3339_local)"
-    local index_file="$target_dir/index.md"
+    dt=$(now_rfc3339_local)
+    index_file="$target_dir/index.md"
 
     {
         printf '+++\ntitle = "%s"\ndate = %s\ndraft = false\n' \
             "$(escape_toml "$title")" "$dt"
 
-        local wrote=0
+        wrote=0
         if [ -n "$tags_csv" ]; then
-            [ $wrote -eq 1 ] || { printf "[taxonomies]\n"; wrote=1; }
-            IFS=',' read -r -a arr <<< "$tags_csv"
+            [ "$wrote" -eq 1 ] || { printf "[taxonomies]\n"; wrote=1; }
+            first=1
+            IFS=,; set -- $tags_csv; IFS=' '
             printf 'tags = ['
-            local i
-            for i in "${!arr[@]}"; do
-                [ "$i" -gt 0 ] && printf ', '
-                local t; t="$(trim "${arr[$i]}")"
+            for t in "$@"; do
+                t=$(trim "$t")
+                [ $first -eq 1 ] || printf ', '
                 printf '"%s"' "$(escape_toml "$t")"
+                first=0
             done
             printf ']\n'
         fi
-        if [ -n "$category" ]; then
-            [ $wrote -eq 1 ] || { printf "[taxonomies]\n"; wrote=1; }
-            local c; c="$(trim "$category")"
+        if [ -n "${category:-}" ]; then
+            [ "$wrote" -eq 1 ] || { printf "[taxonomies]\n"; wrote=1; }
+            c=$(trim "$category")
             printf 'categories = ["%s"]\n' "$(escape_toml "$c")"
         fi
 
@@ -221,151 +263,233 @@ create_post() {
 
     printf "%s\n" "$index_file"
 
-    local editor=""
+    editor=""
     if [ -n "$editor_override" ]; then
         [ "$editor_override" != "none" ] && editor="$editor_override"
     else
-        editor="$(toml_get config editor || true)"
-        [ -z "$editor" ] && editor="${EDITOR:-}"
+        editor=$(toml_get config editor || true 2>/dev/null || :)
+        [ -z "${editor:-}" ] && editor="${EDITOR:-}"
     fi
     if [ -n "${editor:-}" ] && [ "$editor" != "none" ]; then
         if [ -x "$editor" ] || command -v "$editor" >/dev/null 2>&1; then
-            "$editor" "$index_file" || true
+            "$editor" "$index_file" || :
         fi
     fi
 }
 
-# ---------------- Commands ----------------
-
-cmd_new() {
-    local posts_dir="" label="" title=""
-    if [ "${1:-}" = "-d" ]; then
-        shift
-        posts_dir="${1:-}"; [ -n "$posts_dir" ] || err "Missing -d <posts_dir>"
-        shift
-    elif [ -n "${1:-}" ] && [[ "${1}" != -* ]]; then
-        label="$1"; shift
-    fi
-
-    [ -n "${1:-}" ] || usage
-    title="$1"; shift
-
-    if [ -n "$label" ]; then
-        posts_dir="$(toml_get blogs "$label" || true)"
-        [ -n "$posts_dir" ] || err "Blog label '$label' not found in ${CONFIG_FILE}. Use: emile set blogs $label /path/to/posts OR pass -d."
-    fi
-    if [ -z "$posts_dir" ]; then
-        err "No blog configured. Either:
-    1) specify: emile new -d /path/to/posts \"Title\" -t ... -c ... [-e ...]
-    2) or label first: emile set blogs <label> /path/to/posts"
-    fi
-
-    create_post "$posts_dir" "$title" "$@"
+resolve_posts_dir() {
+    label=$1
+    posts_dir=$(toml_get blogs "$label" || true 2>/dev/null || :)
+    [ -n "$posts_dir" ] || err "Blog label '$label' not found in ${CONFIG_FILE}. Use: emile set blogs $label /path/to/posts OR pass -d."
+    printf '%s' "$posts_dir"
 }
+
+find_post_dir_by_query() {
+    posts_dir=$1
+    q=$2
+    posts_dir=$(abs_path "$posts_dir")
+
+    if [ -d "$posts_dir/$q" ]; then
+        printf '%s\n' "$posts_dir/$q"; return 0
+    fi
+    qslug=$(slugify "$q")
+    if [ -d "$posts_dir/$qslug" ]; then
+        printf '%s\n' "$posts_dir/$qslug"; return 0
+    fi
+
+    found=""
+    count=0
+    find "$posts_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while IFS= read -r d; do
+        [ -f "$d/index.md" ] || continue
+        t=$(title_from_index "$d/index.md" || true)
+        [ -n "$t" ] || continue
+        if [ "$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$q" | tr '[:upper:]' '[:lower:]')" ]; then
+            printf '%s\n' "$d"
+        fi
+    done | {
+        while IFS= read -r line; do
+            count=$((count+1))
+            [ $count -eq 1 ] && found=$line
+        done
+        if [ $count -eq 0 ]; then
+            exit 1
+        elif [ $count -eq 1 ]; then
+            printf '%s\n' "$found"; exit 0
+        else
+            printf "Multiple matches for '%s':\n" "$q" >&2
+            find "$posts_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while IFS= read -r d; do
+                [ -f "$d/index.md" ] || continue
+                t=$(title_from_index "$d/index.md" || true)
+                [ -n "$t" ] || t="(untitled)"
+                printf "  %s (%s)\n" "$t" "$(basename "$d")" >&2
+            done
+            exit 2
+        fi
+    }
+    return $?
+}
+
+# ~v[ COMMANDS ]v~
 
 cmd_set() {
     [ $# -ge 2 ] || usage
-    local section="$1"; shift
-    case "$section" in
+    section=$1; shift
+    case $section in
         blogs)
             [ $# -eq 2 ] || usage
-            local label="$1" path="$2"
-            local ap; ap="$(abs_path "$path")"
+            label=$1; path=$2
+            ap=$(abs_path "$path")
             toml_set blogs "$label" "$ap"
             printf "Saved blog '%s' -> %s\n" "$label" "$ap"
             ;;
         config)
             [ $# -eq 2 ] || usage
-            local key="$1" value="$2"
+            key=$1; value=$2
             toml_set config "$key" "$value"
             printf "Saved config %s = %s\n" "$key" "$value"
             ;;
         *)
-            err "Unknown section '${section}'. Use 'blogs' or 'config'."
+            err "Unknown section '$section'. Use 'blogs' or 'config'."
             ;;
     esac
 }
 
+cmd_new() {
+    posts_dir=""; label=""; title=""
+    if [ "${1:-}" = "-d" ]; then
+        shift; [ $# -ge 1 ] || usage
+        posts_dir=$1; shift
+    elif [ $# -ge 1 ] && [ "${1#-}" = "$1" ]; then
+        label=$1; shift
+    fi
+    [ $# -ge 1 ] || usage
+    title=$1; shift
+    [ -n "$posts_dir" ] || posts_dir=$(resolve_posts_dir "$label")
+    create_post "$posts_dir" "$title" "$@"
+}
+
+cmd_posts() {
+    [ $# -eq 1 ] || usage
+    label=$1
+    posts_dir=$(resolve_posts_dir "$label")
+    posts_dir=$(abs_path "$posts_dir")
+    found=0
+    find "$posts_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while IFS= read -r d; do
+        [ -f "$d/index.md" ] || continue
+        t=$(title_from_index "$d/index.md" || echo "(untitled)")
+        printf "%s (%s)\n" "$t" "$(basename "$d")"
+        found=1
+    done
+}
+
+cmd_edit() {
+    [ $# -ge 2 ] || usage
+    label=$1; shift
+    query=$1; shift
+    posts_dir=$(resolve_posts_dir "$label")
+    dir=$(find_post_dir_by_query "$posts_dir" "$query") || err "Post not found for '$query' in '$posts_dir'"
+    index="$dir/index.md"; [ -f "$index" ] || err "No index.md in $dir"
+
+    editor_override=""
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -e) editor_override=$2; shift 2 ;;
+            *) break ;;
+        esac
+    done
+
+    editor=""
+    if [ -n "$editor_override" ]; then
+        [ "$editor_override" != "none" ] && editor="$editor_override"
+    else
+        editor=$(toml_get config editor || true 2>/dev/null || :)
+        [ -z "${editor:-}" ] && editor="${EDITOR:-}"
+    fi
+    [ -n "${editor:-}" ] || err "No editor configured. Use: emile set config editor /path/to/editor or set \$EDITOR"
+
+    if [ -x "$editor" ] || command -v "$editor" >/dev/null 2>&1; then
+        "$editor" "$index"
+    else
+        err "Editor not found: $editor"
+    fi
+}
+
+cmd_rm() {
+    [ $# -ge 2 ] || usage
+    label=$1; shift
+    query=$1; shift
+    force=0
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -f) force=1; shift ;;
+            *) break ;;
+        esac
+    done
+    posts_dir=$(resolve_posts_dir "$label")
+    dir=$(find_post_dir_by_query "$posts_dir" "$query") || err "Post not found for '$query' in '$posts_dir'"
+
+    if [ $force -eq 0 ]; then
+        printf "Remove '%s' ? [y/N] " "$(basename "$dir")"
+        read ans || ans=""
+        case ${ans:-} in y|Y|yes|YES) : ;; *) echo "Aborted."; exit 1 ;; esac
+    fi
+
+    rm -rf -- "$dir"
+    echo "Removed: $dir"
+}
+
 cmd_conf() {
-    [ -f "$CONFIG_FILE" ] || { echo "No ~/.emilerc yet."; return; }
-    echo "[blogs]"
-    local line current=""
-    while IFS= read -r line || [ -n "$line" ]; do
-        line="${line%$'\r'}"
-        if [[ $line =~ ^[[:space:]]*\[[^]]+\][[:space:]]*$ ]]; then
-            if [[ $line =~ ^[[:space:]]*\[blogs\][[:space:]]*$ ]]; then current="blogs"; else current=""; fi
-            continue
-        fi
-        [ "$current" = "blogs" ] || continue
-        [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
-        echo "  $line"
-    done < "$CONFIG_FILE"
-    echo
-    echo "[config]"
-    current=""
-    while IFS= read -r line || [ -n "$line" ]; do
-        line="${line%$'\r'}"
-        if [[ $line =~ ^[[:space:]]*\[[^]]+\][[:space:]]*$ ]]; then
-            if [[ $line =~ ^[[:space:]]*\[config\][[:space:]]*$ ]]; then current="config"; else current=""; fi
-            continue
-        fi
-        [ "$current" = "config" ] || continue
-        [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
-        echo "  $line"
-    done < "$CONFIG_FILE"
+    if [ -f "$CONFIG_FILE" ]; then
+        cat "$CONFIG_FILE"
+    else
+        echo "(no config at $CONFIG_FILE)"
+    fi
 }
 
 cmd_doctor() {
     echo "emile doctor"
-    echo "============="
+    echo "============"
     if [ ! -f "$CONFIG_FILE" ]; then
         echo "- Config: NOT FOUND at $CONFIG_FILE"
         return
     else
         echo "- Config: found at $CONFIG_FILE"
     fi
-
-    # Timezone check
-    local tz; tz="$(get_tz)"
+    tz=$(get_tz)
     echo "- Resolved timezone: $tz"
-    if DATE_STR=$(TZ="$tz" date "+%Y-%m-%dT%H:%M:%S%:z" 2>/dev/null); then
-        echo "  Timestamp sample: $DATE_STR"
+    if TS=$(TZ="$tz" date "+%Y-%m-%dT%H:%M:%S%:z" 2>/dev/null); then
+        echo "  Timestamp sample: $TS"
     else
-        if DATE_STR=$(TZ="$tz" date "+%Y-%m-%dT%H:%M:%S %z" 2>/dev/null); then
-            echo "  Timestamp sample: $DATE_STR (colonized %z)"
+        if TS=$(TZ="$tz" date "+%Y-%m-%dT%H:%M:%S %z" 2>/dev/null); then
+            TS=$(printf '%s' "$TS" | sed -E 's/([+-][0-9]{2})([0-9]{2})/\1:\2/')
+            echo "  Timestamp sample: $TS"
         else
-            echo "  Warning: 'date' didn’t accept TZ='$tz' — timestamps may fall back."
+            echo "  Warning: 'date' did not accept TZ='$tz'"
         fi
     fi
-
-    # Editor check
-    local editor; editor="$(toml_get config editor || true)"
-    [ -z "$editor" ] && editor="${EDITOR:-}"
-    if [ -n "${editor:-}" ]; then
-        if [ -x "$editor" ] || command -v "$editor" >/dev/null 2>&1; then
-            echo "- Editor: OK ($editor)"
+    ed=$(toml_get config editor || true 2>/dev/null || :)
+    [ -z "${ed:-}" ] && ed="${EDITOR:-}"
+    if [ -n "${ed:-}" ]; then
+        if [ -x "$ed" ] || command -v "$ed" >/dev/null 2>&1; then
+            echo "- Editor: OK ($ed)"
         else
-            echo "- Editor: configured but not found on PATH ($editor)"
+            echo "- Editor: configured but not found on PATH ($ed)"
         fi
     else
-        echo "- Editor: not configured (set config editor /path/to/editor or export \$EDITOR)"
+        echo "- Editor: not configured (set config editor … or \$EDITOR)"
     fi
-
-    # Blogs list
     echo "- Blogs:"
-    local line current="" any=0
-    while IFS= read -r line || [ -n "$line" ]; do
-        line="${line%$'\r'}"
-        if [[ $line =~ ^[[:space:]]*\[[^]]+\][[:space:]]*$ ]]; then
-            if [[ $line =~ ^[[:space:]]*\[blogs\][[:space:]]*$ ]]; then current="blogs"; else current=""; fi
-            continue
-        fi
-        [ "$current" = "blogs" ] || continue
-        [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
+    any=0
+    awk '
+    BEGIN{in_section=0}
+    /^[[:space:]]*\[.*\][[:space:]]*$/ { in_section = ($0 ~ /^[[:space:]]*\[blogs\][[:space:]]*$/)?1:0; next }
+    in_section && $0 !~ /^[[:space:]]*(#|$)/ { print }
+    ' "$CONFIG_FILE" | while IFS= read -r line; do
         any=1
-        local k="${line%%=*}"; k="$(trim "$k")"
-        local v="${line#*=}";  v="$(trim "$v")"
-        if [[ $v == \"*\" && $v == *\" ]]; then v="${v#\"}"; v="${v%\"}"; fi
+        k=${line%%=*}; v=${line#*=}
+        k=$(echo "$k" | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')
+        v=$(echo "$v" | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')
+        case $v in \"*\") v=${v#\"}; v=${v%\"} ;; esac
         if [ -d "$v" ] && [ -w "$v" ]; then
             echo "  • $k -> $v (OK)"
         elif [ -d "$v" ]; then
@@ -373,23 +497,33 @@ cmd_doctor() {
         else
             echo "  • $k -> $v (missing)"
         fi
-    done < "$CONFIG_FILE"
+    done
     [ $any -eq 1 ] || echo "  (none)"
 }
 
-# ---------------- Main ----------------
-
-main() {
-    local cmd="${1:-}"; [ -n "$cmd" ] || usage
-    shift || true
-    case "$cmd" in
-        set)    cmd_set "$@" ;;
-        new)    cmd_new "$@" ;;
-        conf)   cmd_conf ;;
-        doctor) cmd_doctor ;;
-        -h|--help|help) usage ;;
-        *)      err "Unknown command: $cmd" ;;
-    esac
+cmd_purge() {
+    if [ -f "$CONFIG_FILE" ]; then
+        rm -f -- "$CONFIG_FILE"
+        echo "Removed $CONFIG_FILE"
+    else
+        echo "No config to remove ($CONFIG_FILE)"
+    fi
 }
 
-main "$@"
+# ~v[ MAIN ]v~
+
+[ $# -gt 0 ] || usage
+cmd=$1; shift || true
+
+case "$cmd" in
+  set)    cmd_set "$@" ;;
+  new)    cmd_new "$@" ;;
+  posts)  cmd_posts "$@" ;;
+  edit)   cmd_edit "$@" ;;
+  rm)     cmd_rm "$@" ;;
+  conf)   cmd_conf ;;
+  doctor) cmd_doctor ;;
+  purge)  cmd_purge ;;
+  -h|--help|help) usage ;;
+  *)      err "Unknown command: $cmd" ;;
+esac
