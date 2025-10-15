@@ -35,13 +35,13 @@ Usage:
         emile new -d <posts_dir> \"Post title\" [-t tag1,tag2] [-c Category] [-e none|/editor]
 
     - List all the posts for a blog:
-    emile posts <label>
+        emile posts <label>
 
     - Edit a blog post:
-    emile edit <label> <title|folder> [-e none|/editor]
+        emile edit <label> <title|folder> [-e none|/editor]
 
     - Remove a blog post:
-    emile rm <label> <title|folder> [-f]
+        emile rm <label> <title|folder> [-f]
 
     - View your Emile config (~/.emilerc):
         emile conf
