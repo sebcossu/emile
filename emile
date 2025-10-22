@@ -1,19 +1,34 @@
 #!/bin/sh
-# ------------------------------------------------
-# A POSIX utility for painless blogging with Zola.
-# ------------------------------------------------
-# by Seb Cossu
-# ------------------------------------------------
+# --------------------------------------------------------
+# Emile - A POSIX utility for painless blogging with Zola.
+# --------------------------------------------------------
+#                   ______    ____
+#      Made by     / aka  \  |  o | 
+#     Seb Cossu   | tatoru |/ ___\| 
+#                <|_________/     
+#                 |_|_| |_|_|
+# --------------------------------------------------------
 # sebcossu.com
 # blog.sebcossu.com
 # sebcossu.github.com
-# ------------------------------------------------
+# --------------------------------------------------------
 
 set -eu
 
 CONFIG_FILE="${HOME}/.emilerc"
 
 # ~v[ UTILS ]v~
+
+credits() {
+    printf '%s\n' "
+                   ______    ____
+      Made by     / aka  \  |  o | 
+     Seb Cossu   | tatoru |/ ___\| 
+                <|_________/     
+                 |_|_| |_|_|
+    "
+    exit 1
+}
 
 usage() {
     printf '%s\n' "
@@ -552,5 +567,6 @@ case "$cmd" in
   doctor) cmd_doctor ;;
   purge)  cmd_purge ;;
   -h|--help|help) usage ;;
+  credits|team|turtle|-t|-c) credits ;;
   *)      err "Unknown command: $cmd" ;;
 esac
